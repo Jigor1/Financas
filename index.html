@@ -246,7 +246,7 @@ create policy "acesso_anon" on backup
 
 <script>
 const KEY='finapp:data';
-const VERSAO='1.2 · 18/07/2026';
+const VERSAO='1.3 · 19/07/2026';
 /* nuvem embutida — o app nasce conectado em qualquer navegador */
 const SB_URL='https://wpunfscnqsxcdxckfkpi.supabase.co';
 const SB_KEY='sb_publishable_sXMW5JNTko5PnrP4BuwW1A_TTwp16BN';
@@ -265,7 +265,7 @@ const DEFAULT_CATS=[
  {n:'Família & Filhos',s:['Escola/Creche','Mesada','Roupas/Brinquedos','Pensão']},
  {n:'Outros',s:['Diversos','Imprevistos']}
 ];
-let DB={txs:[],cats:JSON.parse(JSON.stringify(DEFAULT_CATS)),theme:'light',sync:{url:SB_URL,key:SB_KEY,on:true},updatedAt:0};
+let DB={txs:[],cats:JSON.parse(JSON.stringify(DEFAULT_CATS)),theme:'light',sync:{url:SB_URL,key:SB_KEY,on:true},deleted:[],updatedAt:0};
 
 /* ===== persistência em camadas =====
    1. localStorage  (navegador comum)
@@ -277,12 +277,22 @@ async function readWS(){ try{const r=await window.storage.get(KEY); if(r&&r.valu
 async function writeWS(){ try{await window.storage.set(KEY,JSON.stringify(DB));}catch(e){} }
 
 function mergeTxs(d){
-  if(!d||!Array.isArray(d.txs))return 0;
-  const ids=new Set(DB.txs.map(t=>t.id));
-  let n=0;
-  d.txs.forEach(t=>{ if(t&&t.id&&!ids.has(t.id)&&t.tipo!=='receita'){DB.txs.push(t);ids.add(t.id);n++;} });
-  if(n)DB.txs.sort((a,b)=>b.data.localeCompare(a.data)||b.id-a.id);
-  return n;
+  if(!d)return {added:0,removed:0};
+  /* une as listas de exclusão e remove localmente o que foi excluído em qualquer lugar */
+  const del=new Set(DB.deleted||[]);
+  (d.deleted||[]).forEach(id=>del.add(id));
+  DB.deleted=[...del].slice(-2000);
+  const before=DB.txs.length;
+  DB.txs=DB.txs.filter(t=>!del.has(t.id));
+  const removed=before-DB.txs.length;
+  /* adiciona o que falta, exceto excluídos */
+  let added=0;
+  if(Array.isArray(d.txs)){
+    const ids=new Set(DB.txs.map(t=>t.id));
+    d.txs.forEach(t=>{ if(t&&t.id&&!ids.has(t.id)&&!del.has(t.id)&&t.tipo!=='receita'){DB.txs.push(t);ids.add(t.id);added++;} });
+  }
+  if(added)DB.txs.sort((a,b)=>b.data.localeCompare(a.data)||b.id-a.id);
+  return {added,removed};
 }
 function mergeCats(d){
   if(!d||!Array.isArray(d.cats))return;
@@ -304,8 +314,9 @@ async function load(){
     DB.sync={url:'',key:'',on:false,...(base.sync||{})};
     if(!DB.sync.url||!DB.sync.key){DB.sync={url:SB_URL,key:SB_KEY,on:true};} // garante nuvem sempre ativa
     DB.txs=(base.txs||[]).filter(t=>t.tipo!=='receita');
+    DB.deleted=Array.isArray(base.deleted)?base.deleted:[];
     DB.updatedAt=base.updatedAt||0;
-    fontes.slice(1).forEach(f=>{ if(mergeTxs(f))mergeCats(f); });
+    fontes.slice(1).forEach(f=>{ mergeTxs(f); mergeCats(f); });
   }
   applyTheme(); renderAll(); fillSyncUI();
   if(DB.sync.on&&DB.sync.url&&DB.sync.key){ await cloudPull(); }
@@ -393,7 +404,7 @@ async function cloudPush(){
     const res=await fetch(sbUrl()+'/rest/v1/backup',{
       method:'POST',
       headers:{...sbHeaders(true),'Prefer':'resolution=merge-duplicates'},
-      body:JSON.stringify([{id:1,payload:{txs:DB.txs,cats:DB.cats,theme:DB.theme,updatedAt:DB.updatedAt},updated_at:new Date().toISOString()}])
+      body:JSON.stringify([{id:1,payload:{txs:DB.txs,cats:DB.cats,theme:DB.theme,deleted:DB.deleted,updatedAt:DB.updatedAt},updated_at:new Date().toISOString()}])
     });
     if(!res.ok){const b=await res.text();diagShow(explainError(res.status,b),false);throw new Error(res.status);}
     setSyncStatus('☁️ '+DB.txs.length+' lançamento(s) na nuvem · '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}),true);
@@ -410,10 +421,12 @@ async function cloudPull(){
     if(!res.ok){const b=await res.text();diagShow(explainError(res.status,b),false);throw new Error(res.status);}
     const rows=await res.json();
     const pay=rows[0]&&rows[0].payload;
-    if(pay&&Array.isArray(pay.txs)&&pay.txs.length){
-      const n=mergeTxs(pay);
+    if(pay&&Array.isArray(pay.txs)&&(pay.txs.length||Array.isArray(pay.deleted))){
+      const r=mergeTxs(pay);
       mergeCats(pay);
-      if(n){ renderAll(); writeLS(); writeWS(); toast(n+' lançamento(s) recuperado(s) da nuvem ☁️'); }
+      if(r.added||r.removed){ renderAll(); writeLS(); writeWS(); }
+      if(r.added)toast(r.added+' lançamento(s) recuperado(s) da nuvem ☁️');
+      if(r.removed)toast(r.removed+' exclusão(ões) aplicada(s) ☁️');
       setSyncStatus('☁️ '+DB.txs.length+' lançamento(s) sincronizado(s) · '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}),true);
     }else{
       setSyncStatus('☁️ Conectado, mas a nuvem está VAZIA — abra o app no aparelho que tem os gastos e toque em "Sincronizar agora"',false);
@@ -567,7 +580,11 @@ function saveTx(){
     persist(); closeModal(); renderAll(); toast('Despesa salva ✓');
   }
 }
-function delTx(id){ DB.txs=DB.txs.filter(t=>t.id!==id); persist(); renderAll(); }
+function delTx(id){
+  DB.txs=DB.txs.filter(t=>t.id!==id);
+  DB.deleted=[...new Set([...(DB.deleted||[]),id])].slice(-2000); // marca como excluído para todos os dispositivos
+  persist(); renderAll();
+}
 
 function txRow(t,showDel){
   return `<div class="tx">
@@ -629,7 +646,7 @@ function addCat(){const n=prompt('Nome da nova categoria:');if(n){DB.cats.push({
 function rmCat(i){if(confirm(`Remover a categoria "${DB.cats[i].n}"? Os lançamentos existentes não serão apagados.`)){DB.cats.splice(i,1);persist();renderCfg();}}
 function addSub(i){const n=prompt('Nome da subcategoria:');if(n){DB.cats[i].s.push(n.trim());persist();renderCfg();}}
 function rmSub(i,j){DB.cats[i].s.splice(j,1);persist();renderCfg();}
-function clearAll(){if(confirm('Apagar TODOS os lançamentos? Essa ação não pode ser desfeita.')){DB.txs=[];persist();renderAll();toast('Lançamentos apagados');}}
+function clearAll(){if(confirm('Apagar TODOS os lançamentos? Essa ação não pode ser desfeita e vale para todos os dispositivos.')){DB.deleted=[...new Set([...(DB.deleted||[]),...DB.txs.map(t=>t.id)])].slice(-2000);DB.txs=[];persist();renderAll();toast('Lançamentos apagados');}}
 function exportData(){
   const blob=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
@@ -643,6 +660,9 @@ function importData(ev){
     try{
       const d=JSON.parse(reader.result);
       if(!d||!Array.isArray(d.txs)) throw new Error('formato');
+      // restauração explícita: ids do arquivo saem da lista de excluídos
+      const fileIds=new Set(d.txs.map(t=>t&&t.id).filter(Boolean));
+      DB.deleted=(DB.deleted||[]).filter(id=>!fileIds.has(id));
       // mescla lançamentos sem duplicar (por id)
       const ids=new Set(DB.txs.map(t=>t.id));
       let added=0;
