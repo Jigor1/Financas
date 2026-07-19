@@ -246,7 +246,7 @@ create policy "acesso_anon" on backup
 
 <script>
 const KEY='finapp:data';
-const VERSAO='1.1 · 18/07/2026';
+const VERSAO='1.2 · 18/07/2026';
 /* nuvem embutida — o app nasce conectado em qualquer navegador */
 const SB_URL='https://wpunfscnqsxcdxckfkpi.supabase.co';
 const SB_KEY='sb_publishable_sXMW5JNTko5PnrP4BuwW1A_TTwp16BN';
@@ -320,7 +320,12 @@ function persist(pushCloud=true){
 /* ===== nuvem (Supabase) ===== */
 let pushTimer=null;
 const sbUrl=()=>DB.sync.url.replace(/\/+$/,'');
-const sbHeaders=()=>({'Content-Type':'application/json','apikey':DB.sync.key,'Authorization':'Bearer '+DB.sync.key});
+const sbHeaders=(json=false)=>{
+  const h={'apikey':DB.sync.key};
+  if(DB.sync.key.startsWith('eyJ'))h['Authorization']='Bearer '+DB.sync.key; // só chaves antigas usam Bearer
+  if(json)h['Content-Type']='application/json';
+  return h;
+};
 function setSyncStatus(msg,ok){
   const el=document.getElementById('s-status');
   if(el){el.textContent=msg;el.style.color=ok===true?'var(--green)':ok===false?'var(--red)':'var(--mut)';}
@@ -359,22 +364,22 @@ async function testSync(){
   if(!url||!key){diagShow('⚠️ Preencha a URL e a chave antes de testar.',false);return;}
   if(!/^https:\/\//.test(url)){diagShow('❌ A URL precisa começar com <b>https://</b> — exemplo: https://abcdefgh.supabase.co',false);return;}
   diagShow('⏳ Testando conexão…');
+  const hh=(json)=>{const h={'apikey':key};if(key.startsWith('eyJ'))h['Authorization']='Bearer '+key;if(json)h['Content-Type']='application/json';return h;};
   /* Passo 1: leitura */
   let res,body='';
   try{
-    res=await fetch(url+'/rest/v1/backup?id=eq.1&select=id',{headers:{'apikey':key,'Authorization':'Bearer '+key}});
+    res=await fetch(url+'/rest/v1/backup?id=eq.1&select=id',{headers:hh()});
     body=await res.text();
   }catch(e){ diagShow(explainNetworkError(),false); setSyncStatus('⚠️ Sem conexão com a nuvem',false); return; }
   if(!res.ok){ diagShow(explainError(res.status,body),false); setSyncStatus('⚠️ Configuração incompleta',false); return; }
-  /* Passo 2: escrita */
+  /* Passo 2: escrita em linha de teste separada (id=2) — não toca no backup real */
   try{
-    const w=await fetch(url+'/rest/v1/backup',{method:'POST',headers:{'Content-Type':'application/json','apikey':key,'Authorization':'Bearer '+key,'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([{id:1,payload:{teste:true},updated_at:new Date().toISOString()}])});
+    const w=await fetch(url+'/rest/v1/backup',{method:'POST',headers:{...hh(true),'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([{id:2,payload:{teste:true},updated_at:new Date().toISOString()}])});
     if(!w.ok){ const wb=await w.text(); diagShow('Leitura OK ✓, mas a <b>escrita</b> falhou:<br>'+explainError(w.status,wb),false); return; }
+    fetch(url+'/rest/v1/backup?id=eq.2',{method:'DELETE',headers:hh()}); // limpa a linha de teste
   }catch(e){ diagShow(explainNetworkError(),false); return; }
   diagShow('✅ <b>Tudo certo!</b> Leitura e escrita funcionando. Toque em "Salvar e ativar" e o backup automático está no ar.',true);
   setSyncStatus('☁️ Conexão OK — pronto para ativar',true);
-  /* restaura o payload real por cima do teste */
-  if(DB.sync.on)cloudPush();
 }
 function scheduleCloudPush(){
   if(!DB.sync.on||!DB.sync.url||!DB.sync.key)return;
@@ -387,11 +392,11 @@ async function cloudPush(){
     setSyncStatus('☁️ Enviando…');
     const res=await fetch(sbUrl()+'/rest/v1/backup',{
       method:'POST',
-      headers:{...sbHeaders(),'Prefer':'resolution=merge-duplicates'},
+      headers:{...sbHeaders(true),'Prefer':'resolution=merge-duplicates'},
       body:JSON.stringify([{id:1,payload:{txs:DB.txs,cats:DB.cats,theme:DB.theme,updatedAt:DB.updatedAt},updated_at:new Date().toISOString()}])
     });
     if(!res.ok){const b=await res.text();diagShow(explainError(res.status,b),false);throw new Error(res.status);}
-    setSyncStatus('☁️ Sincronizado às '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}),true);
+    setSyncStatus('☁️ '+DB.txs.length+' lançamento(s) na nuvem · '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}),true);
   }catch(e){
     if(e instanceof TypeError)diagShow(explainNetworkError(),false);
     setSyncStatus('⚠️ Falha ao enviar — toque em "Testar conexão" para ver o motivo',false);
@@ -402,14 +407,17 @@ async function cloudPull(){
   try{
     setSyncStatus('☁️ Baixando…');
     const res=await fetch(sbUrl()+'/rest/v1/backup?id=eq.1&select=payload',{headers:sbHeaders()});
-    if(!res.ok)throw new Error(res.status);
+    if(!res.ok){const b=await res.text();diagShow(explainError(res.status,b),false);throw new Error(res.status);}
     const rows=await res.json();
-    if(rows[0]&&rows[0].payload){
-      const n=mergeTxs(rows[0].payload);
-      mergeCats(rows[0].payload);
+    const pay=rows[0]&&rows[0].payload;
+    if(pay&&Array.isArray(pay.txs)&&pay.txs.length){
+      const n=mergeTxs(pay);
+      mergeCats(pay);
       if(n){ renderAll(); writeLS(); writeWS(); toast(n+' lançamento(s) recuperado(s) da nuvem ☁️'); }
+      setSyncStatus('☁️ '+DB.txs.length+' lançamento(s) sincronizado(s) · '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}),true);
+    }else{
+      setSyncStatus('☁️ Conectado, mas a nuvem está VAZIA — abra o app no aparelho que tem os gastos e toque em "Sincronizar agora"',false);
     }
-    setSyncStatus('☁️ Sincronizado às '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}),true);
   }catch(e){ setSyncStatus('⚠️ Falha ao baixar — confira URL/chave e sua conexão',false); }
 }
 function fillSyncUI(){
