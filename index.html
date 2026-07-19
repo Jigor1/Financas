@@ -246,7 +246,7 @@ create policy "acesso_anon" on backup
 
 <script>
 const KEY='finapp:data';
-const VERSAO='1.3 · 19/07/2026';
+const VERSAO='1.4 · 19/07/2026';
 /* nuvem embutida — o app nasce conectado em qualquer navegador */
 const SB_URL='https://wpunfscnqsxcdxckfkpi.supabase.co';
 const SB_KEY='sb_publishable_sXMW5JNTko5PnrP4BuwW1A_TTwp16BN';
@@ -277,7 +277,7 @@ async function readWS(){ try{const r=await window.storage.get(KEY); if(r&&r.valu
 async function writeWS(){ try{await window.storage.set(KEY,JSON.stringify(DB));}catch(e){} }
 
 function mergeTxs(d){
-  if(!d)return {added:0,removed:0};
+  if(!d)return {added:0,removed:0,updated:0};
   /* une as listas de exclusão e remove localmente o que foi excluído em qualquer lugar */
   const del=new Set(DB.deleted||[]);
   (d.deleted||[]).forEach(id=>del.add(id));
@@ -285,14 +285,19 @@ function mergeTxs(d){
   const before=DB.txs.length;
   DB.txs=DB.txs.filter(t=>!del.has(t.id));
   const removed=before-DB.txs.length;
-  /* adiciona o que falta, exceto excluídos */
-  let added=0;
+  /* adiciona o que falta e atualiza o que foi editado em outro lugar, exceto excluídos */
+  let added=0,updated=0;
   if(Array.isArray(d.txs)){
-    const ids=new Set(DB.txs.map(t=>t.id));
-    d.txs.forEach(t=>{ if(t&&t.id&&!ids.has(t.id)&&!del.has(t.id)&&t.tipo!=='receita'){DB.txs.push(t);ids.add(t.id);added++;} });
+    const byId=new Map(DB.txs.map(t=>[t.id,t]));
+    d.txs.forEach(t=>{
+      if(!t||!t.id||del.has(t.id)||t.tipo==='receita')return;
+      const loc=byId.get(t.id);
+      if(!loc){ DB.txs.push(t); byId.set(t.id,t); added++; }
+      else if((t.mod||0)>(loc.mod||0)){ Object.assign(loc,t); updated++; } // edição mais recente vence
+    });
   }
-  if(added)DB.txs.sort((a,b)=>b.data.localeCompare(a.data)||b.id-a.id);
-  return {added,removed};
+  if(added||updated)DB.txs.sort((a,b)=>b.data.localeCompare(a.data)||b.id-a.id);
+  return {added,removed,updated};
 }
 function mergeCats(d){
   if(!d||!Array.isArray(d.cats))return;
@@ -424,9 +429,10 @@ async function cloudPull(){
     if(pay&&Array.isArray(pay.txs)&&(pay.txs.length||Array.isArray(pay.deleted))){
       const r=mergeTxs(pay);
       mergeCats(pay);
-      if(r.added||r.removed){ renderAll(); writeLS(); writeWS(); }
+      if(r.added||r.removed||r.updated){ renderAll(); writeLS(); writeWS(); }
       if(r.added)toast(r.added+' lançamento(s) recuperado(s) da nuvem ☁️');
       if(r.removed)toast(r.removed+' exclusão(ões) aplicada(s) ☁️');
+      if(r.updated)toast(r.updated+' edição(ões) aplicada(s) ☁️');
       setSyncStatus('☁️ '+DB.txs.length+' lançamento(s) sincronizado(s) · '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}),true);
     }else{
       setSyncStatus('☁️ Conectado, mas a nuvem está VAZIA — abra o app no aparelho que tem os gastos e toque em "Sincronizar agora"',false);
@@ -570,7 +576,7 @@ function fillSubs(){
 function saveTx(){
   const v=parseVal(document.getElementById('m-val').value);
   if(v<=0){toast('Informe um valor!');return;}
-  const dados={val:v,cat:document.getElementById('m-cat').value,sub:document.getElementById('m-sub').value,desc:document.getElementById('m-desc').value.trim(),data:selDate||now()};
+  const dados={val:v,cat:document.getElementById('m-cat').value,sub:document.getElementById('m-sub').value,desc:document.getElementById('m-desc').value.trim(),data:selDate||now(),mod:Date.now()};
   if(editId!==null){
     const t=DB.txs.find(x=>x.id===editId);
     if(t)Object.assign(t,dados);
