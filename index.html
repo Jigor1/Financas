@@ -246,7 +246,10 @@ create policy "acesso_anon" on backup
 
 <script>
 const KEY='finapp:data';
-const VERSAO='1.0 · 18/07/2026';
+const VERSAO='1.1 · 18/07/2026';
+/* nuvem embutida — o app nasce conectado em qualquer navegador */
+const SB_URL='https://wpunfscnqsxcdxckfkpi.supabase.co';
+const SB_KEY='sb_publishable_sXMW5JNTko5PnrP4BuwW1A_TTwp16BN';
 const ICONS={'Moradia':'🏠','Alimentação':'🍽️','Transporte':'🚗','Saúde':'💊','Educação':'📚','Lazer':'🎬','Pessoal':'👤','Financeiro':'💳','Pets':'🐾','Família & Filhos':'👨‍👩‍👧','Outros':'📦'};
 const COLORS=['#1cb0f6','#58cc02','#ff9600','#ce82ff','#ff4b4b','#ffc800','#2ec4b6','#ff6b9d','#8bd450','#5e7ce2','#f28f3b'];
 const DEFAULT_CATS=[
@@ -262,7 +265,7 @@ const DEFAULT_CATS=[
  {n:'Família & Filhos',s:['Escola/Creche','Mesada','Roupas/Brinquedos','Pensão']},
  {n:'Outros',s:['Diversos','Imprevistos']}
 ];
-let DB={txs:[],cats:JSON.parse(JSON.stringify(DEFAULT_CATS)),theme:'light',sync:{url:'',key:'',on:false},updatedAt:0};
+let DB={txs:[],cats:JSON.parse(JSON.stringify(DEFAULT_CATS)),theme:'light',sync:{url:SB_URL,key:SB_KEY,on:true},updatedAt:0};
 
 /* ===== persistência em camadas =====
    1. localStorage  (navegador comum)
@@ -299,6 +302,7 @@ async function load(){
     DB.cats=base.cats&&base.cats.length?base.cats:DB.cats;
     DB.theme=base.theme||'light';
     DB.sync={url:'',key:'',on:false,...(base.sync||{})};
+    if(!DB.sync.url||!DB.sync.key){DB.sync={url:SB_URL,key:SB_KEY,on:true};} // garante nuvem sempre ativa
     DB.txs=(base.txs||[]).filter(t=>t.tipo!=='receita');
     DB.updatedAt=base.updatedAt||0;
     fontes.slice(1).forEach(f=>{ if(mergeTxs(f))mergeCats(f); });
@@ -431,7 +435,7 @@ async function syncNow(){
 function disableSync(){
   DB.sync.on=false;
   persist(false); fillSyncUI();
-  toast('Backup na nuvem desativado');
+  toast('Backup na nuvem desativado — toque em "Salvar e ativar" para religar');
 }
 const fmt=v=>'R$ '+v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const parseVal=s=>parseFloat(String(s).replace(/\./g,'').replace(',','.'))||0;
